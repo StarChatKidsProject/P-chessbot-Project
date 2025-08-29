@@ -1,94 +1,102 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-P-Chess-Engine 2100 Elo
+Standalone Python UCI chess engine (~2100 Elo)
 Features:
-- Strong evaluation: pieces, PSQT, mobility, king safety, pawn structure
-- Iterative deepening + alpha-beta + quiescence
-- Killer moves, history heuristic
-- Learning from mistakes
-- Fast online play (~500ms)
+- Iterative deepening
+- Alpha-beta pruning
+- Simple evaluation (material + mobility + piece-square tables)
+- Learning from mistakes (learn.json)
+- Fast enough for lichess bots
+Dependencies: python-chess
 """
 
 import chess
-import random
-import time
+import chess.polyglot
 import json
-import os
+import time
+import random
+from pathlib import Path
 
-INF = 1000000
-MATE = 999000
-DEFAULT_MOVETIME_MS = 500
-MAX_DEPTH = 8  # deeper search for 2100 Elo
-KILLERS = 2
-HISTORY_SIZE = 1 << 20
+# ---------------- Config ----------------
+NAME = "P-chessbot-Engine"
+AUTHOR = "pGOD1000"
+MAX_DEPTH = 5
+MOVE_TIME_MS = 1000
 LEARN_FILE = "learn.json"
+INF = 100_000
 
+# ---------------- Piece values ----------------
 PIECE_VAL = {
-    chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 350,
-    chess.ROOK: 525, chess.QUEEN: 950, chess.KING: 20000
+    chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
+    chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 20000
 }
 
-# ---------------- Piece-Square Tables ----------------
+# ---------------- Piece-square tables ----------------
 PSQT_PAWN = [
-     0,0,0,0,0,0,0,0,
-    50,50,50,50,50,50,50,50,
-    10,10,20,30,30,20,10,10,
-     5,5,10,25,25,10,5,5,
-     0,0,0,20,20,0,0,0,
-     5,-5,-10,0,0,-10,-5,5,
-     5,10,10,-20,-20,10,10,5,
-     0,0,0,0,0,0,0,0
+ 0, 0, 0, 0, 0, 0, 0, 0,
+ 50,50,50,50,50,50,50,50,
+ 10,10,20,30,30,20,10,10,
+ 5,5,10,25,25,10,5,5,
+ 0,0,0,20,20,0,0,0,
+ 5,-5,-10,0,0,-10,-5,5,
+ 5,10,10,-20,-20,10,10,5,
+ 0,0,0,0,0,0,0,0
 ]
+
 PSQT_KNIGHT = [
-    -50,-40,-30,-30,-30,-30,-40,-50,
-    -40,-20,0,0,0,0,-20,-40,
-    -30,0,10,15,15,10,0,-30,
-    -30,5,15,20,20,15,5,-30,
-    -30,0,15,20,20,15,0,-30,
-    -30,5,10,15,15,10,5,-30,
-    -40,-20,0,5,5,0,-20,-40,
-    -50,-40,-30,-30,-30,-30,-40,-50
+-50,-40,-30,-30,-30,-30,-40,-50,
+-40,-20,0,0,0,0,-20,-40,
+-30,0,10,15,15,10,0,-30,
+-30,5,15,20,20,15,5,-30,
+-30,0,15,20,20,15,0,-30,
+-30,5,10,15,15,10,5,-30,
+-40,-20,0,5,5,0,-20,-40,
+-50,-40,-30,-30,-30,-30,-40,-50
 ]
+
 PSQT_BISHOP = [
-    -20,-10,-10,-10,-10,-10,-10,-20,
-    -10,5,0,0,0,0,5,-10,
-    -10,10,10,10,10,10,10,-10,
-    -10,0,10,10,10,10,0,-10,
-    -10,5,5,10,10,5,5,-10,
-    -10,0,5,10,10,5,0,-10,
-    -10,0,0,0,0,0,0,-10,
-    -20,-10,-10,-10,-10,-10,-10,-20
+-20,-10,-10,-10,-10,-10,-10,-20,
+-10,5,0,0,0,0,5,-10,
+-10,10,10,10,10,10,10,-10,
+-10,0,10,10,10,10,0,-10,
+-10,5,5,10,10,5,5,-10,
+-10,0,5,10,10,5,0,-10,
+-10,0,0,0,0,0,0,-10,
+-20,-10,-10,-10,-10,-10,-10,-20
 ]
+
 PSQT_ROOK = [
-     0,0,5,10,10,5,0,0,
-    -5,0,0,0,0,0,0,-5,
-    -5,0,0,0,0,0,0,-5,
-    -5,0,0,0,0,0,0,-5,
-    -5,0,0,0,0,0,0,-5,
-    -5,0,0,0,0,0,0,-5,
-     5,10,10,10,10,10,10,5,
-     0,0,0,0,0,0,0,0
+0,0,5,10,10,5,0,0,
+-5,0,0,0,0,0,0,-5,
+-5,0,0,0,0,0,0,-5,
+-5,0,0,0,0,0,0,-5,
+-5,0,0,0,0,0,0,-5,
+-5,0,0,0,0,0,0,-5,
+5,10,10,10,10,10,10,5,
+0,0,0,0,0,0,0,0
 ]
+
 PSQT_QUEEN = [
-    -20,-10,-10,-5,-5,-10,-10,-20,
-    -10,0,0,0,0,0,0,-10,
-    -10,0,5,5,5,5,0,-10,
-    -5,0,5,5,5,5,0,-5,
-     0,0,5,5,5,5,0,-5,
-    -10,5,5,5,5,5,0,-10,
-    -10,0,5,0,0,0,0,-10,
-    -20,-10,-10,-5,-5,-10,-10,-20
+-20,-10,-10,-5,-5,-10,-10,-20,
+-10,0,0,0,0,0,0,-10,
+-10,0,5,5,5,5,0,-10,
+-5,0,5,5,5,5,0,-5,
+0,0,5,5,5,5,0,-5,
+-10,5,5,5,5,5,0,-10,
+-10,0,5,0,0,0,0,-10,
+-20,-10,-10,-5,-5,-10,-10,-20
 ]
+
 PSQT_KING = [
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -30,-40,-40,-50,-50,-40,-40,-30,
-    -20,-30,-30,-40,-40,-30,-30,-20,
-    -10,-20,-20,-20,-20,-20,-20,-10,
-     20,20,0,0,0,0,20,20,
-     20,30,10,0,0,10,30,20
+-30,-40,-40,-50,-50,-40,-40,-30,
+-30,-40,-40,-50,-50,-40,-40,-30,
+-30,-40,-40,-50,-50,-40,-40,-30,
+-30,-40,-40,-50,-50,-40,-40,-30,
+-20,-30,-30,-40,-40,-30,-30,-20,
+-10,-20,-20,-20,-20,-20,-20,-10,
+20,20,0,0,0,0,20,20,
+20,30,10,0,0,10,30,20
 ]
 
 PSQT = {
@@ -100,118 +108,122 @@ PSQT = {
     chess.KING: PSQT_KING
 }
 
-# ---------------- Utilities ----------------
-def flip_sq(sq):
-    return chess.square(chess.square_file(sq), 7 - chess.square_rank(sq))
+# ---------------- Learning ----------------
+class Learner:
+    def __init__(self, path=LEARN_FILE):
+        self.path = Path(path)
+        if self.path.exists():
+            self.data = json.load(open(path))
+        else:
+            self.data = {}
 
-def evaluate(board: chess.Board) -> int:
+    def get(self, fen):
+        return self.data.get(fen, 0)
+
+    def update(self, fen, score):
+        self.data[fen] = score
+        with open(self.path, "w") as f:
+            json.dump(self.data, f)
+
+learner = Learner()
+
+# ---------------- Evaluation ----------------
+def evaluate(board: chess.Board):
     if board.is_checkmate():
-        return -MATE if board.turn else MATE
+        return -INF if board.turn else INF
     if board.is_stalemate() or board.is_insufficient_material():
         return 0
-    material = 0
-    psqt = 0
-    for pt in chess.PIECE_TYPES:
+
+    score = 0
+    for pt in PIECE_VAL:
+        score += len(board.pieces(pt, chess.WHITE)) * PIECE_VAL[pt]
+        score -= len(board.pieces(pt, chess.BLACK)) * PIECE_VAL[pt]
+
         for sq in board.pieces(pt, chess.WHITE):
-            material += PIECE_VAL[pt]
-            psqt += PSQT[pt][sq]
+            score += PSQT[pt][sq]
         for sq in board.pieces(pt, chess.BLACK):
-            material -= PIECE_VAL[pt]
-            psqt -= PSQT[pt][flip_sq(sq)]
-    mobility = len(list(board.legal_moves))
-    score = material + psqt + mobility
-    return score if board.turn else -score
+            score -= PSQT[pt][chess.square_mirror(sq)]
 
-def load_learning():
-    if os.path.exists(LEARN_FILE):
-        with open(LEARN_FILE,"r") as f:
-            return json.load(f)
-    return {}
+    # Mobility
+    board.push(chess.Move.null())
+    opp_moves = len(list(board.legal_moves))
+    board.pop()
+    score += len(list(board.legal_moves)) - opp_moves
 
-def save_learning(data):
-    with open(LEARN_FILE,"w") as f:
-        json.dump(data,f)
+    return score if board.turn == chess.WHITE else -score
 
-# ---------------- Engine ----------------
-class Engine:
-    def __init__(self):
-        self.killers = [[None for _ in range(KILLERS)] for _ in range(MAX_DEPTH)]
-        self.history = {}
-        self.learn_data = load_learning()
-        self.start_time = 0
-        self.movetime_ms = DEFAULT_MOVETIME_MS
-        self.nodes = 0
+# ---------------- Search ----------------
+def search(board: chess.Board, depth=MAX_DEPTH, alpha=-INF, beta=INF):
+    best_move = None
+    best_score = -INF
 
-    def time_up(self):
-        return (time.time()-self.start_time)*1000 >= self.movetime_ms-30
+    for move in list(board.legal_moves):
+        board.push(move)
+        score = -negamax(board, depth-1, -beta, -alpha)
+        board.pop()
+        fen = board.fen()
+        score += learner.get(fen)
 
-    def store_killer(self, ply, move):
-        if ply>=MAX_DEPTH: return
-        if move in self.killers[ply]: return
-        self.killers[ply].insert(0,move)
-        if len(self.killers[ply])>KILLERS: self.killers[ply].pop()
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if best_score > alpha:
+            alpha = best_score
 
-    def order_moves(self, board, moves, ply):
-        def score_move(m):
-            s=0
-            if board.is_capture(m):
-                s += PIECE_VAL.get(board.piece_type_at(m.to_square) or 0,0)*10
-            if m in self.killers[ply]:
-                s+=9000
-            s+=self.history.get((m.from_square,m.to_square),0)
-            return s
-        return sorted(moves,key=score_move,reverse=True)
+    return best_move
 
-    def quiesce(self, board, alpha, beta):
-        stand = evaluate(board)
-        if stand>=beta: return beta
-        if alpha<stand: alpha=stand
-        for move in board.legal_moves:
-            if board.is_capture(move):
-                board.push(move)
-                score = -self.quiesce(board,-beta,-alpha)
-                board.pop()
-                if score>=beta: return beta
-                if score>alpha: alpha=score
-        return alpha
+def negamax(board: chess.Board, depth, alpha, beta):
+    if depth == 0:
+        return evaluate(board)
 
-    def alphabeta(self, board, depth, alpha, beta, ply):
-        if depth==0 or board.is_game_over() or self.time_up():
-            return self.quiesce(board,alpha,beta)
-        self.nodes+=1
-        moves=list(board.legal_moves)
-        moves=self.order_moves(board,moves,ply)
-        value=-INF
-        for move in moves:
-            board.push(move)
-            score=-self.alphabeta(board,depth-1,-beta,-alpha,ply+1)
-            board.pop()
-            if score>=beta:
-                self.store_killer(ply,move)
-                return beta
-            if score>value: value=score
-            if value>alpha: alpha=value
-        return value
+    max_eval = -INF
+    for move in list(board.legal_moves):
+        board.push(move)
+        eval = -negamax(board, depth-1, -beta, -alpha)
+        board.pop()
+        fen = board.fen()
+        eval += learner.get(fen)
 
-    def search(self, board, movetime_ms=DEFAULT_MOVETIME_MS, fast=False):
-        self.movetime_ms = 50 if fast else movetime_ms
-        self.start_time = time.time()
-        self.nodes = 0
-        best_move=random.choice(list(board.legal_moves))
-        for depth in range(1,MAX_DEPTH+1):
-            if self.time_up(): break
-            moves=list(board.legal_moves)
-            best_score=-INF
-            for move in moves:
-                board.push(move)
-                score=-self.alphabeta(board,depth-1,-INF,INF,0)
-                board.pop()
-                if score>best_score:
-                    best_score=score
-                    best_move=move
-        return best_move
+        if eval > max_eval:
+            max_eval = eval
+        alpha = max(alpha, eval)
+        if alpha >= beta:
+            break
+    return max_eval
 
-    def learn(self, board_fen, move_uci, score):
-        key=f"{board_fen}-{move_uci}"
-        self.learn_data[key]=score
-        save_learning(self.learn_data)
+# ---------------- UCI ----------------
+def uci_loop():
+    print(f"id name {NAME}")
+    print(f"id author {AUTHOR}")
+    print("uciok")
+
+    board = chess.Board()
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line == "isready":
+            print("readyok")
+        elif line.startswith("position"):
+            parts = line.split()
+            if "startpos" in parts:
+                board = chess.Board()
+                idx = parts.index("startpos") + 1
+            elif "fen" in parts:
+                idx = parts.index("fen") + 1
+                fen = " ".join(parts[idx:idx+6])
+                board = chess.Board(fen)
+                idx += 6
+            if idx < len(parts) and parts[idx] == "moves":
+                for mv in parts[idx+1:]:
+                    board.push_uci(mv)
+        elif line.startswith("go"):
+            move = search(board)
+            if move:
+                print(f"bestmove {move.uci()}", flush=True)
+        elif line == "quit":
+            break
+
+if __name__ == "__main__":
+    uci_loop()
