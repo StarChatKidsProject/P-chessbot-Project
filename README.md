@@ -60,7 +60,7 @@ python-chess (pip install chess)
 
 Run directly as a UCI engine:
 
-"python3 p-chess_engine.py"
+'python3 p-chess_engine.py'
 
 
 Then load it into your favorite GUI or connect it to lichess-bot
